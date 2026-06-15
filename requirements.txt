@@ -1,0 +1,7 @@
+google-auth
+google-auth-oauthlib
+google-generativeai
+notion-client
+Pillow
+python-dotenv
+requests

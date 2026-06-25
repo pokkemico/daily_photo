@@ -68,7 +68,7 @@ def _call_gemini(candidates: list[dict]) -> dict:
     import io
 
     from google import genai
-    from google.genai import types
+    from google.genai import errors, types
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
@@ -82,16 +82,25 @@ def _call_gemini(candidates: list[dict]) -> dict:
         contents.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
     contents.append(PROMPT)
 
-    response = client.models.generate_content(
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash"),
-        contents=contents,
-    )
+    primary = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+    fallback = "gemini-2.5-flash"
+    models = [primary] if primary == fallback else [primary, fallback]
 
-    text = response.text.strip()
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        raise ValueError(f"JSONが見つかりません: {text}")
-    return json.loads(m.group())
+    last_exc = None
+    for model in models:
+        try:
+            logger.info("Geminiモデル: %s", model)
+            response = client.models.generate_content(model=model, contents=contents)
+            text = response.text.strip()
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m:
+                raise ValueError(f"JSONが見つかりません: {text}")
+            return json.loads(m.group())
+        except errors.ServerError as e:
+            logger.warning("モデル %s が失敗 (%s)、次を試みます", model, e)
+            last_exc = e
+
+    raise last_exc
 
 
 def _crop_square(path: Path, cx: float, cy: float, output_path: Path) -> None:

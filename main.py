@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import logging
 import sys
 from datetime import date, timedelta
@@ -13,8 +12,8 @@ load_dotenv()
 LOG_PATH = Path(__file__).parent / "logs" / "main.log"
 
 from fetch import get_candidates
-from notion import save
-from selector import SELECTIONS_JSON, select
+from notion import get_used_filenames, save
+from selector import select
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +30,10 @@ def _setup_logging() -> None:
     )
 
 
-def _used_filenames() -> set[str]:
-    if not SELECTIONS_JSON.exists():
-        return set()
-    data = json.loads(SELECTIONS_JSON.read_text())
-    return {entry["filename"] for entry in data.values()}
-
-
 def run(target_date: date) -> None:
     logger.info("===== %s 処理開始 =====", target_date)
 
-    candidates = get_candidates(target_date, _used_filenames())
+    candidates = get_candidates(target_date, get_used_filenames())
     if not candidates:
         logger.info("%s: 候補なし。スキップ", target_date)
         return

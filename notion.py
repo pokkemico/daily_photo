@@ -1,3 +1,4 @@
+import calendar
 import logging
 import os
 from datetime import date
@@ -22,6 +23,31 @@ def _headers(api_key: str) -> dict:
     }
 
 
+def _query_all(api_key: str, database_id: str, filter_body: dict | None = None) -> list[dict]:
+    headers = _headers(api_key)
+    results = []
+    cursor = None
+    while True:
+        body: dict = {}
+        if filter_body:
+            body["filter"] = filter_body
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = requests.post(
+            f"{NOTION_API}/databases/{database_id}/query",
+            headers=headers,
+            json=body,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return results
+
+
 def _is_registered(api_key: str, database_id: str, target_date: date) -> bool:
     resp = requests.post(
         f"{NOTION_API}/databases/{database_id}/query",
@@ -31,6 +57,50 @@ def _is_registered(api_key: str, database_id: str, target_date: date) -> bool:
     )
     resp.raise_for_status()
     return len(resp.json().get("results", [])) > 0
+
+
+def is_registered(target_date: date) -> bool:
+    api_key = os.environ["NOTION_API_KEY"]
+    database_id = os.environ["NOTION_DATABASE_ID"]
+    return _is_registered(api_key, database_id, target_date)
+
+
+def get_used_filenames() -> set[str]:
+    """全登録済みエントリのsource_filenameを返す（フォールバック重複防止用）"""
+    api_key = os.environ["NOTION_API_KEY"]
+    database_id = os.environ["NOTION_DATABASE_ID"]
+    results = _query_all(api_key, database_id)
+    filenames = set()
+    for page in results:
+        source = page.get("properties", {}).get("source_filename", {}).get("rich_text", [])
+        if source:
+            filenames.add(source[0]["text"]["content"])
+    return filenames
+
+
+def get_month_images(year: int, month: int) -> dict[str, str]:
+    """{YYYY-MM-DD: image_url} を返す（グリッド生成用）"""
+    api_key = os.environ["NOTION_API_KEY"]
+    database_id = os.environ["NOTION_DATABASE_ID"]
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    results = _query_all(api_key, database_id, filter_body={
+        "and": [
+            {"property": "日付", "date": {"on_or_after": start}},
+            {"property": "日付", "date": {"on_or_before": end}},
+        ]
+    })
+    images = {}
+    for page in results:
+        props = page.get("properties", {})
+        date_prop = props.get("日付", {}).get("date")
+        if not date_prop:
+            continue
+        date_str = date_prop.get("start", "")[:10]
+        files = props.get("画像", {}).get("files", [])
+        if files and files[0].get("type") == "file":
+            images[date_str] = files[0]["file"]["url"]
+    return images
 
 
 def _upload_file(api_key: str, file_path: Path) -> str:

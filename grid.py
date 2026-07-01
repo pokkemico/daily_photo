@@ -2,24 +2,31 @@
 """
 先月分の今日の一枚を L版（89mm×127mm / 300DPI）に 3×4 グリッドで配置する。
 1ページ 12枚、月全体を複数ページに分割して Discord に送信する。
-画像は images/output/YYYY/MM/ から読み込む。該当日がなければ noimage.png を使用。
+画像は Notion DAILY_IMG DB から取得する。該当日がなければ noimage.png を使用。
 """
+import io
 import logging
+import shutil
 import sys
+import tempfile
 from calendar import monthrange
 from datetime import date
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "common"))
 from notify import send_discord_file
 
+from notion import get_month_images
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+CAMERA_UPLOADS_DIR = Path(__file__).parent / "images" / "camera_uploads"
 OUTPUT_DIR = Path(__file__).parent / "images" / "output"
 GRID_DIR = Path(__file__).parent / "images" / "grid"
 NOIMAGE_PATH = Path(__file__).parent / "images" / "noimage.png"
@@ -69,19 +76,48 @@ def _build_page(image_paths: list[Path], page_num: int, year: int, month: int) -
 
 def build_grid(year: int, month: int) -> list[Path]:
     days = monthrange(year, month)[1]
+    notion_images = get_month_images(year, month)
+    logger.info("Notionから%d件の画像URLを取得", len(notion_images))
 
-    all_paths = []
-    for day in range(1, days + 1):
-        img = OUTPUT_DIR / f"{year:04d}" / f"{month:02d}" / f"{year:04d}-{month:02d}-{day:02d}.jpg"
-        all_paths.append(img if img.exists() else NOIMAGE_PATH)
+    tmp_dir = Path(tempfile.mkdtemp())
+    try:
+        all_paths = []
+        for day in range(1, days + 1):
+            date_str = f"{year:04d}-{month:02d}-{day:02d}"
+            if date_str in notion_images:
+                try:
+                    resp = requests.get(notion_images[date_str], timeout=30)
+                    resp.raise_for_status()
+                    tmp_path = tmp_dir / f"{date_str}.jpg"
+                    tmp_path.write_bytes(resp.content)
+                    all_paths.append(tmp_path)
+                except Exception as e:
+                    logger.warning("画像ダウンロード失敗 %s: %s", date_str, e)
+                    all_paths.append(NOIMAGE_PATH)
+            else:
+                all_paths.append(NOIMAGE_PATH)
 
-    pages = []
-    for i in range(0, len(all_paths), PER_PAGE):
-        page_paths = all_paths[i:i + PER_PAGE]
-        page_num = i // PER_PAGE + 1
-        pages.append(_build_page(page_paths, page_num, year, month))
+        pages = []
+        for i in range(0, len(all_paths), PER_PAGE):
+            page_paths = all_paths[i:i + PER_PAGE]
+            page_num = i // PER_PAGE + 1
+            pages.append(_build_page(page_paths, page_num, year, month))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return pages
+
+
+def _cleanup_month(year: int, month: int) -> None:
+    """指定月のローカル画像を削除する"""
+    targets = [
+        CAMERA_UPLOADS_DIR / f"{year:04d}" / f"{month:02d}",
+        OUTPUT_DIR / f"{year:04d}" / f"{month:02d}",
+    ]
+    for target in targets:
+        if target.exists():
+            shutil.rmtree(target)
+            logger.info("削除完了: %s", target)
 
 
 def run(year: int, month: int) -> None:
@@ -91,6 +127,8 @@ def run(year: int, month: int) -> None:
             str(page),
             message=f"{year}年{month}月 振り返りグリッド（{i}/{len(pages)}）",
         )
+    _cleanup_month(year, month)
+    logger.info("前月ローカル画像を削除しました: %04d-%02d", year, month)
 
 
 if __name__ == "__main__":
